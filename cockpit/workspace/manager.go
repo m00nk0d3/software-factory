@@ -8,7 +8,16 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 )
+
+const (
+	StatusLeftLength = 60
+)
+
+var httpClient = &http.Client{
+	Timeout: 30 * time.Second,
+}
 
 type Workspace struct {
 	TaskID       string
@@ -37,7 +46,11 @@ func NewManager(baseURL string) *Manager {
 // SaveState saves the currently active workspace TaskID to a file
 func (m *Manager) SaveState(taskId string) error {
 	data, _ := json.Marshal(map[string]string{"active_task_id": taskId})
-	return os.WriteFile(m.StateFile, data, 0644)
+	tmpFile := m.StateFile + ".tmp"
+	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpFile, m.StateFile)
 }
 
 // LoadState loads the active task ID from the file
@@ -62,7 +75,7 @@ func (m *Manager) CreateWorkspace(taskId, issueId, branch string) (*Workspace, e
 	}
 	
 	body, _ := json.Marshal(payload)
-	resp, err := http.Post(fmt.Sprintf("%s/api/worktree/create", m.SandcastleBaseURL), "application/json", bytes.NewBuffer(body))
+	resp, err := httpClient.Post(fmt.Sprintf("%s/api/worktree/create", m.SandcastleBaseURL), "application/json", bytes.NewBuffer(body))
 	if err != nil {
 		return nil, err
 	}
@@ -128,17 +141,29 @@ func (m *Manager) LaunchWorkspace(ws *Workspace) error {
 	}
 
 	// Set pane titles
-	_, _ = exec.Command("tmux", "select-pane", "-t", ws.TmuxSession+":0.0", "-T", "NEOVIM").Run()
-	_, _ = exec.Command("tmux", "select-pane", "-t", ws.TmuxSession+":0.1", "-T", "PI AGENT").Run()
+	if _, err := exec.Command("tmux", "select-pane", "-t", ws.TmuxSession+":0.0", "-T", "NEOVIM").Run(); err != nil {
+		return fmt.Errorf("failed to set NEOVIM title: %w", err)
+	}
+	if _, err := exec.Command("tmux", "select-pane", "-t", ws.TmuxSession+":0.1", "-T", "PI AGENT").Run(); err != nil {
+		return fmt.Errorf("failed to set PI AGENT title: %w", err)
+	}
 
 	// Configure status bar
 	statusLeft := fmt.Sprintf("🏭 Factory | 📂 %s | 🌿 %s", ws.IssueID, ws.Branch)
-	_, _ = exec.Command("tmux", "set-option", "-t", ws.TmuxSession, "status-left", statusLeft).Run()
-	_, _ = exec.Command("tmux", "set-option", "-t", ws.TmuxSession, "status-left-length", "60").Run()
-	_, _ = exec.Command("tmux", "set-option", "-t", ws.TmuxSession, "status-right", "[Ctrl+B D] Exit to Cockpit").Run()
+	if _, err := exec.Command("tmux", "set-option", "-t", ws.TmuxSession, "status-left", statusLeft).Run(); err != nil {
+		return fmt.Errorf("failed to set status-left: %w", err)
+	}
+	if _, err := exec.Command("tmux", "set-option", "-t", ws.TmuxSession, "status-left-length", fmt.Sprintf("%d", StatusLeftLength)).Run(); err != nil {
+		return fmt.Errorf("failed to set status-left-length: %w", err)
+	}
+	if _, err := exec.Command("tmux", "set-option", "-t", ws.TmuxSession, "status-right", "[Ctrl+B D] Exit to Cockpit").Run(); err != nil {
+		return fmt.Errorf("failed to set status-right: %w", err)
+	}
 
 	// Focus on Neovim pane
-	_, _ = exec.Command("tmux", "select-pane", "-t", ws.TmuxSession+":0.0").Run()
+	if _, err := exec.Command("tmux", "select-pane", "-t", ws.TmuxSession+":0.0").Run(); err != nil {
+		return fmt.Errorf("failed to focus Neovim pane: %w", err)
+	}
 
 	return nil
 }
@@ -163,7 +188,7 @@ func (m *Manager) Detach(ws *Workspace) error {
 func (m *Manager) ListWorktrees() ([]Workspace, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	resp, err := http.Get(fmt.Sprintf("%s/api/worktree/list", m.SandcastleBaseURL))
+	resp, err := httpClient.Get(fmt.Sprintf("%s/api/worktree/list", m.SandcastleBaseURL))
 	if err != nil {
 		return nil, err
 	}
