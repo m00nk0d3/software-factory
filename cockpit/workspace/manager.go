@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sync"
 )
 
 type Workspace struct {
@@ -22,6 +23,7 @@ type Manager struct {
 	SandcastleBaseURL string
 	SessionMap        map[string]*Workspace
 	StateFile         string
+	mu                sync.RWMutex
 }
 
 func NewManager(baseURL string) *Manager {
@@ -54,8 +56,9 @@ func (m *Manager) LoadState() (string, error) {
 // CreateWorkspace calls the Sandcastle Bridge to create a new worktree
 func (m *Manager) CreateWorkspace(taskId, issueId, branch string) (*Workspace, error) {
 	payload := map[string]string{
-		"taskId": taskId,
-		"branch": branch,
+		"taskId":  taskId,
+		"issueId": issueId,
+		"branch":  branch,
 	}
 	
 	body, _ := json.Marshal(payload)
@@ -89,7 +92,10 @@ func (m *Manager) CreateWorkspace(taskId, issueId, branch string) (*Workspace, e
 		Active:       true,
 	}
 
+	m.mu.Lock()
 	m.SessionMap[taskId] = ws
+	m.mu.Unlock()
+	
 	_ = m.SaveState(taskId)
 	return ws, nil
 }
@@ -155,6 +161,8 @@ func (m *Manager) Detach(ws *Workspace) error {
 
 // ListWorktrees fetches all active worktrees from the Sandcastle Bridge
 func (m *Manager) ListWorktrees() ([]Workspace, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	resp, err := http.Get(fmt.Sprintf("%s/api/worktree/list", m.SandcastleBaseURL))
 	if err != nil {
 		return nil, err
