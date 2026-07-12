@@ -109,7 +109,9 @@ func (m *Manager) CreateWorkspace(taskId, issueId, branch string) (*Workspace, e
 	m.SessionMap[taskId] = ws
 	m.mu.Unlock()
 	
-	_ = m.SaveState(taskId)
+	if err := m.SaveState(taskId); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to save state: %v\n", err)
+	}
 	return ws, nil
 }
 
@@ -178,9 +180,9 @@ func (m *Manager) AttachToSession(ws *Workspace) error {
 
 // Detach returns from the attached session
 func (m *Manager) Detach(ws *Workspace) error {
-	// This is tricky because tmux attach blocks. 
-	// Usually, the user presses Ctrl+B D.
-	// In a Go app, we might need to handle this via signal handling or just let the user detach manually.
+	// Note: tmux attach-session blocks the process. Detachment is typically 
+	// handled by the user via keyboard shortcuts (e.g., Ctrl+B D).
+	// This method is kept for interface completeness.
 	return nil
 }
 

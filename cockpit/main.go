@@ -11,7 +11,10 @@ import (
 
 func main() {
 	// Configuration
-	sandcastleBaseURL := "http://localhost:3001"
+	sandcastleBaseURL := os.Getenv("SANDCASTLE_URL")
+	if sandcastleBaseURL == "" {
+		sandcastleBaseURL = "http://localhost:3001"
+	}
 	
 	mgr := workspace.NewManager(sandcastleBaseURL)
 	
