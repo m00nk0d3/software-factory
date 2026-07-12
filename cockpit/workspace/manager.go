@@ -1,0 +1,175 @@
+package workspace
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"os/exec"
+)
+
+type Workspace struct {
+	TaskID       string
+	IssueID      string
+	WorktreePath string
+	Branch       string
+	TmuxSession  string
+	Active       bool
+}
+
+type Manager struct {
+	SandcastleBaseURL string
+	SessionMap        map[string]*Workspace
+	StateFile         string
+}
+
+func NewManager(baseURL string) *Manager {
+	return &Manager{
+		SandcastleBaseURL: baseURL,
+		SessionMap:        make(map[string]*Workspace),
+		StateFile:         "workspace_state.json",
+	}
+}
+
+// SaveState saves the currently active workspace TaskID to a file
+func (m *Manager) SaveState(taskId string) error {
+	data, _ := json.Marshal(map[string]string{"active_task_id": taskId})
+	return os.WriteFile(m.StateFile, data, 0644)
+}
+
+// LoadState loads the active task ID from the file
+func (m *Manager) LoadState() (string, error) {
+	data, err := os.ReadFile(m.StateFile)
+	if err != nil {
+		return "", err
+	}
+	var state map[string]string
+	if err := json.Unmarshal(data, &state); err != nil {
+		return "", err
+	}
+	return state["active_task_id"], nil
+}
+
+// CreateWorkspace calls the Sandcastle Bridge to create a new worktree
+func (m *Manager) CreateWorkspace(taskId, issueId, branch string) (*Workspace, error) {
+	payload := map[string]string{
+		"taskId": taskId,
+		"branch": branch,
+	}
+	
+	body, _ := json.Marshal(payload)
+	resp, err := http.Post(fmt.Sprintf("%s/api/worktree/create", m.SandcastleBaseURL), "application/json", bytes.NewBuffer(body))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to create worktree: %d", resp.StatusCode)
+	}
+
+	var result struct {
+		WorktreePath string `json:"worktreePath"`
+		Branch       string `json:"branch"`
+		TaskId       string `json:"taskId"`
+		Status       string `json:"status"`
+	}
+	
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	ws := &Workspace{
+		TaskID:       result.TaskId,
+		IssueID:      issueId,
+		WorktreePath: result.WorktreePath,
+		Branch:       result.Branch,
+		TmuxSession:  fmt.Sprintf("factory-%s", issueId),
+		Active:       true,
+	}
+
+	m.SessionMap[taskId] = ws
+	_ = m.SaveState(taskId)
+	return ws, nil
+}
+
+// LaunchWorkspace initializes the tmux session for the given workspace
+func (m *Manager) LaunchWorkspace(ws *Workspace) error {
+	// Create new session in detached mode
+	_, err := exec.Command("tmux", "new-session", "-d", "-s", ws.TmuxSession, "-c", ws.WorktreePath).Run()
+	if err != nil {
+		return fmt.Errorf("failed to create tmux session: %w", err)
+	}
+
+	// Split window vertically (50/50)
+	_, err = exec.Command("tmux", "split-window", "-h", "-t", ws.TmuxSession+":0", "-c", ws.WorktreePath).Run()
+	if err != nil {
+		return fmt.Errorf("failed to split tmux window: %w", err)
+	}
+
+	// Left pane: Neovim
+	_, err = exec.Command("tmux", "send-keys", "-t", ws.TmuxSession+":0.0", "nvim .", "Enter").Run()
+	if err != nil {
+		return fmt.Errorf("failed to send keys to left pane: %w", err)
+	}
+
+	// Right pane: Pi Agent
+	piCmd := fmt.Sprintf("pi --worktree-mode --task-id=%s", ws.TaskID)
+	_, err = exec.Command("tmux", "send-keys", "-t", ws.TmuxSession+":0.1", piCmd, "Enter").Run()
+	if err != nil {
+		return fmt.Errorf("failed to send keys to right pane: %w", err)
+	}
+
+	// Set pane titles
+	_, _ = exec.Command("tmux", "select-pane", "-t", ws.TmuxSession+":0.0", "-T", "NEOVIM").Run()
+	_, _ = exec.Command("tmux", "select-pane", "-t", ws.TmuxSession+":0.1", "-T", "PI AGENT").Run()
+
+	// Configure status bar
+	statusLeft := fmt.Sprintf("🏭 Factory | 📂 %s | 🌿 %s", ws.IssueID, ws.Branch)
+	_, _ = exec.Command("tmux", "set-option", "-t", ws.TmuxSession, "status-left", statusLeft).Run()
+	_, _ = exec.Command("tmux", "set-option", "-t", ws.TmuxSession, "status-left-length", "60").Run()
+	_, _ = exec.Command("tmux", "set-option", "-t", ws.TmuxSession, "status-right", "[Ctrl+B D] Exit to Cockpit").Run()
+
+	// Focus on Neovim pane
+	_, _ = exec.Command("tmux", "select-pane", "-t", ws.TmuxSession+":0.0").Run()
+
+	return nil
+}
+
+// AttachToSession blocks until the user detaches from the tmux session
+func (m *Manager) AttachToSession(ws *Workspace) error {
+	cmd := exec.Command("tmux", "attach-session", "-t", ws.TmuxSession)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// Detach returns from the attached session
+func (m *Manager) Detach(ws *Workspace) error {
+	// This is tricky because tmux attach blocks. 
+	// Usually, the user presses Ctrl+B D.
+	// In a Go app, we might need to handle this via signal handling or just let the user detach manually.
+	return nil
+}
+
+// ListWorktrees fetches all active worktrees from the Sandcastle Bridge
+func (m *Manager) ListWorktrees() ([]Workspace, error) {
+	resp, err := http.Get(fmt.Sprintf("%s/api/worktree/list", m.SandcastleBaseURL))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to list worktrees: %d", resp.StatusCode)
+	}
+
+	var results struct {
+		Worktrees []Workspace `json:"worktrees"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+		return nil, err
+	}
+	return results.Worktrees, nil
+}
