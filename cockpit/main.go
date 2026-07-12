@@ -15,11 +15,14 @@ func main() {
 		sandcastleBaseURL = "http://localhost:3001"
 	}
 
-	// Config path logic
-	configDir, err := os.UserConfigDir()
-	stateFilePath := "workspace_state.json"
-	if err == nil {
-		stateFilePath = fmt.Sprintf("%s/software-factory/%s", configDir, stateFilePath)
+	stateFilePath := os.Getenv("STATE_FILE_PATH")
+	if stateFilePath == "" {
+		configDir, err := os.UserConfigDir()
+		if err == nil {
+			stateFilePath = fmt.Sprintf("%s/software-factory/workspace_state.json", configDir)
+		} else {
+			stateFilePath = "workspace_state.json"
+		}
 	}
 
 	// Initialize Bridge and Manager

@@ -127,8 +127,12 @@ func (m *Model) launchWorkspaceCmd(taskId string, idx int) tea.Cmd {
 			}
 		}
 		
-		m.manager.LaunchWorkspace(ws)
-		m.manager.AttachToSession(ws)
+		if err := m.manager.LaunchWorkspace(ws); err != nil {
+			return tuiMsg{err: err}
+		}
+		if err := m.manager.AttachToSession(ws); err != nil {
+			return tuiMsg{err: err}
+		}
 		
 		_ = m.manager.SaveState(taskId)
 		
@@ -154,7 +158,7 @@ func (m Model) View() string {
 	if m.quitting {
 		return "Quitting...\n"
 	}
-
+	
 	if m.loading {
 		return fmt.Sprintf("\n%s\n\n%s\n\n", m.spinner.View(), m.loadingMsg)
 	}
@@ -178,5 +182,10 @@ func (m Model) View() string {
 		s += fmt.Sprintf("%s [%s] %s %s\n", cursor, t.Status, icon, t.Title)
 	}
 	s += "\n(i) Jump | (x) Close | (q) Quit"
+
+	if m.err != nil {
+		s += fmt.Sprintf("\n\nError: %v", m.err)
+	}
+
 	return s
 }
