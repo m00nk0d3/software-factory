@@ -49,12 +49,6 @@ func NewModel(mgr *workspace.Manager) *Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	// Start a goroutine to handle async updates via msgChan
-	go func() {
-		for msg := range m.msgChan {
-			m.Update(msg)
-		}
-	}()
 	return m.spinner.Tick
 }
 
@@ -72,12 +66,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.loading = true
 				m.loadingMsg = fmt.Sprintf("Launching workspace for %s...", m.tasks[m.selectedIdx].Title)
-				go m.launchWorkspace(m.tasks[m.selectedIdx].ID, m.selectedIdx)
+				return m, m.launchWorkspaceCmd(m.tasks[m.selectedIdx].ID, m.selectedIdx)
 			}
 			return m, nil
 		case "x":
 			if m.workspace != nil {
-				go m.closeWorkspace()
+				return m, m.closeWorkspaceCmd()
 			}
 			return m, nil
 		case "up":
@@ -120,35 +114,39 @@ type tuiMsg struct {
 	err error
 }
 
-func (m *Model) launchWorkspace(taskId string, idx int) {
-	ws, ok := m.manager.SessionMap[taskId]
-	if !ok {
-		task := m.tasks[idx]
-		ws, err := m.manager.CreateWorkspace(task.ID, task.IssueID, task.Branch)
-		if err != nil {
-			m.err = err
-			m.loading = false
-			m.loadingMsg = fmt.Sprintf("Error: %v", err)
-			return
+func (m *Model) launchWorkspaceCmd(taskId string, idx int) tea.Cmd {
+	return func() tea.Msg {
+		ws, ok := m.manager.SessionMap[taskId]
+		if !ok {
+			task := m.tasks[idx]
+			ws, err := m.manager.GetOrCreateWorkspace(task.ID, task.IssueID, task.Branch)
+			if err != nil {
+				// This is a bit of a hack since we are in a Cmd, 
+				// but we'll have to handle the error via the msg.
+				return tuiMsg{err: err}
+			}
 		}
+		
+		m.manager.LaunchWorkspace(ws)
+		m.manager.AttachToSession(ws)
+		
+		_ = m.manager.SaveState(taskId)
+		
+		return tuiMsg{ws: ws, err: nil}
 	}
-	
-	m.manager.LaunchWorkspace(ws)
-	m.manager.AttachToSession(ws)
-	
-	_ = m.manager.SaveState(taskId)
-	
-	m.msgChan <- tuiMsg{ws: ws, err: nil}
 }
 
-func (m *Model) closeWorkspace() {
-	if m.workspace != nil {
-		m.manager.Detach(m.workspace)
-		m.manager.SaveState("")
-		m.workspace = nil
-		for i := range m.tasks {
-			m.tasks[i].IsActive = false
+func (m *Model) closeWorkspaceCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.workspace != nil {
+			m.manager.Detach(m.workspace)
+			m.manager.SaveState("")
+			m.workspace = nil
+			for i := range m.tasks {
+				m.tasks[i].IsActive = false
+			}
 		}
+		return tuiMsg{}
 	}
 }
 

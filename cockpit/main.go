@@ -5,7 +5,6 @@ import (
 	"os"
 
 	"github.com/charmbracelet/bubbletea"
-	"github.com/yourusername/factory-cockpit/tui"
 	"github.com/yourusername/factory-cockpit/workspace"
 )
 
@@ -15,8 +14,17 @@ func main() {
 	if sandcastleBaseURL == "" {
 		sandcastleBaseURL = "http://localhost:3001"
 	}
-	
-	mgr := workspace.NewManager(sandcastleBaseURL)
+
+	// Config path logic
+	configDir, err := os.UserConfigDir()
+	stateFilePath := "workspace_state.json"
+	if err == nil {
+		stateFilePath = fmt.Sprintf("%s/software-factory/%s", configDir, stateFilePath)
+	}
+
+	// Initialize Bridge and Manager
+	bridge := workspace.NewHttpWorkspaceBridge(sandcastleBaseURL, nil)
+	mgr := workspace.NewManager(bridge, stateFilePath)
 	
 	// Load persistence state
 	activeTaskId, err := mgr.LoadState()
